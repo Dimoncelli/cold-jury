@@ -113,12 +113,14 @@ async function readDiff(flags, cwd, options) {
   return result.stdout;
 }
 
-function capInput(text, maxBytes) {
+export function capInput(text, maxBytes) {
   const originalBytes = Buffer.byteLength(text, 'utf8');
   if (originalBytes <= maxBytes) return { text, limit: null };
   let truncated = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
   const lastBreak = truncated.lastIndexOf('\n');
   if (lastBreak > maxBytes * 0.8) truncated = truncated.slice(0, lastBreak);
+  // A CRLF diff must not end on a dangling carriage return.
+  if (truncated.endsWith('\r')) truncated = truncated.slice(0, -1);
   return { text: truncated, limit: { maxBytes, truncated: true, originalBytes } };
 }
 

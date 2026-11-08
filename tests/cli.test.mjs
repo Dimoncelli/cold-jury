@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import { assertNotSymlink, main, helpText, hookScript, VERSION } from '../src/cli.js';
+import { assertNotSymlink, capInput, helpText, hookScript, main, VERSION } from '../src/cli.js';
 
 const tempDirs = [];
 
@@ -167,6 +167,28 @@ describe('cli: install-hook', () => {
     const result = await run(['install-hook'], { cwd });
     assert.equal(result.code, 2);
     assert.match(result.stderr, /symlink_refused/);
+  });
+});
+
+describe('cli: input cap', () => {
+  const LF = String.fromCharCode(10);
+  const CRLF = String.fromCharCode(13, 10);
+
+  it('keeps a LF diff under the cap untouched', () => {
+    const text = ['diff --git a/app.js b/app.js', '+console.log(1)', ''].join(LF);
+    const result = capInput(text, 1000);
+    assert.equal(result.text, text);
+    assert.equal(result.limit, null);
+  });
+
+  it('never leaves a dangling carriage return when truncating a CRLF diff', () => {
+    const text = ['x'.repeat(70), 'y'.repeat(50)].join(CRLF);
+    const result = capInput(text, 80);
+    assert.equal(result.limit.truncated, true);
+    assert.equal(result.limit.maxBytes, 80);
+    assert.ok(result.limit.originalBytes > 80);
+    assert.equal(result.text.endsWith(String.fromCharCode(13)), false);
+    assert.equal(result.text, 'x'.repeat(70));
   });
 });
 
