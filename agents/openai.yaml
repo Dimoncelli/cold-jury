@@ -1,0 +1,14 @@
+name: cold-jury
+version: 0.1.0
+description: "Cross-CLI hostile code review with three parallel jurors and a deterministic PASS or BLOCK gate."
+entrypoint: bin/cold-jury.mjs
+runtime: node
+node: ">=20"
+commands:
+  - doctor
+  - review
+  - install-hook
+interface:
+  display_name: "Cold Jury"
+  short_description: "Hostile cross-CLI review: three jurors, secret shield, deterministic gate."
+  default_prompt: "Review my staged diff with cold-jury and list every P0 and P1 finding before I commit."

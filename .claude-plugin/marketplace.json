@@ -1,0 +1,13 @@
+{
+  "name": "cold-jury",
+  "owner": {
+    "name": "Dimoncelli"
+  },
+  "plugins": [
+    {
+      "name": "cold-jury",
+      "source": "./",
+      "description": "Cross-CLI hostile code review with three parallel jurors and a deterministic PASS/BLOCK gate."
+    }
+  ]
+}

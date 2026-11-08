@@ -1,0 +1,56 @@
+{
+  "name": "cold-jury",
+  "version": "0.1.0",
+  "description": "Cross-CLI hostile code review: three parallel jurors, pre-flight secret redaction and a deterministic PASS/BLOCK gate. Zero dependencies.",
+  "type": "module",
+  "bin": {
+    "cold-jury": "./bin/cold-jury.mjs"
+  },
+  "main": "./src/cli.js",
+  "exports": {
+    ".": "./src/cli.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "SKILL.md",
+    "agents",
+    ".claude-plugin",
+    "README.md",
+    "README.es.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "doctor": "node bin/cold-jury.mjs doctor",
+    "review": "node bin/cold-jury.mjs review"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "keywords": [
+    "code-review",
+    "ai-agents",
+    "claude",
+    "codex",
+    "gemini",
+    "opencode",
+    "ollama",
+    "security",
+    "secrets",
+    "ci"
+  ],
+  "license": "MIT",
+  "author": "Dimoncelli",
+  "homepage": "https://github.com/Dimoncelli/cold-jury",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dimoncelli/cold-jury.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dimoncelli/cold-jury/issues"
+  }
+}
