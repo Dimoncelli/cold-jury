@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   aggregate,
+  aggregateTrace,
   completedVerdicts,
   countSeverities,
   errorDictamen,
@@ -258,5 +259,49 @@ describe('verdict: deterministic gate', () => {
     assert.equal(finding.line, null);
     assert.equal(finding.file, '');
     assert.equal(finding.id, 'AS-001');
+  });
+});
+
+describe('verdict: trace aggregate', () => {
+  const TRACE = { trace_id: 'trace-abc', ground_truth: { required_steps: ['a'] } };
+  const METRICS = { tool_selection_accuracy: 1, mcp_compliance: 1, turn_efficiency: 1, workflow_completion: 1 };
+
+  it('blocks on a secret leak with the SL-001 finding', () => {
+    const verdict = aggregateTrace({ trace: TRACE, metrics: METRICS, shield: { redactions: 1, leak: true } });
+    assert.equal(verdict.verdict, 'BLOCK');
+    assert.equal(verdict.exitCode, 1);
+    assert.equal(verdict.secretShield.leak, true);
+    assert.ok(verdict.findings.some((finding) => finding.id === 'SL-001'));
+    assert.equal(verdict.severity, 'P0');
+  });
+
+  it('blocks when a probe blocks', () => {
+    const verdict = aggregateTrace({
+      trace: TRACE,
+      metrics: METRICS,
+      probeResults: { prompt_injection_detection: { verdict: 'BLOCK', severity: 'P1', findings: [{ id: 'PI-001', severity: 'P1', title: 'injected' }] } },
+    });
+    assert.equal(verdict.verdict, 'BLOCK');
+    assert.equal(verdict.severity, 'P1');
+  });
+
+  it('blocks an unmet required step even without probe findings', () => {
+    const verdict = aggregateTrace({ trace: TRACE, metrics: { ...METRICS, workflow_completion: 0.5 } });
+    assert.equal(verdict.verdict, 'BLOCK');
+  });
+
+  it('passes a clean trace and exposes the metrics and probes', () => {
+    const probes = {
+      delegation_quality: { verdict: 'PASS', severity: 'NONE', findings: [] },
+      instruction_compliance: { verdict: 'PASS', severity: 'NONE', findings: [] },
+      prompt_injection_detection: { verdict: 'PASS', severity: 'NONE', findings: [] },
+    };
+    const verdict = aggregateTrace({ trace: TRACE, metrics: METRICS, probeResults: probes, version: '0.2.0' });
+    assert.equal(verdict.verdict, 'PASS');
+    assert.equal(verdict.exitCode, 0);
+    assert.equal(verdict.severity, 'NONE');
+    assert.equal(verdict.trace_id, 'trace-abc');
+    assert.deepEqual(verdict.metrics, METRICS);
+    assert.equal(Object.keys(verdict.probes).length, 3);
   });
 });

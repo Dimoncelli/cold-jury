@@ -1,6 +1,6 @@
 {
   "name": "cold-jury",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cross-CLI hostile code review with three parallel jurors, pre-flight secret redaction and a deterministic PASS/BLOCK gate.",
   "author": {
     "name": "Dimoncelli"
@@ -14,6 +14,13 @@
   "bugs": {
     "url": "https://github.com/Dimoncelli/cold-jury/issues"
   },
-  "keywords": ["code-review", "security", "ai-agents", "ci"],
-  "skills": ["SKILL.md"]
+  "keywords": [
+    "code-review",
+    "security",
+    "ai-agents",
+    "ci"
+  ],
+  "skills": [
+    "SKILL.md"
+  ]
 }

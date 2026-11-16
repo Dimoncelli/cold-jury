@@ -53,7 +53,7 @@ describe('cli: version and help', () => {
       const result = await run([flag]);
       assert.equal(result.code, 0);
       assert.equal(result.stdout, `cold-jury ${VERSION}\n`);
-      assert.equal(VERSION, '0.1.0');
+      assert.equal(VERSION, '0.2.0');
     }
   });
 
@@ -259,5 +259,168 @@ describe('cli: review guards', () => {
     const result = await run(['review', '--output', '../escape.json', '--author', 'claude'], { cwd, env: {}, doctor: fakeDoctor });
     assert.equal(result.code, 2);
     assert.match(result.stderr, /output_outside_cwd/);
+  });
+});
+
+describe('cli: gateway flag wiring', () => {
+  it('passes the gateway signal to the adapter deps without changing run()', async () => {
+    const cwd = tempDir();
+    let captured = null;
+    const result = await run(['review', '--author', 'hook', '--gateway', '--json'], {
+      cwd,
+      env: { ANTHROPIC_API_KEY: 'REAL-KEY' },
+      doctor: () => [{ engine: 'claude', status: 'READY', command: 'claude', path: 'claude' }],
+      resolveBinary: () => ({ command: 'git', prefixArgs: [], wrapper: 'direct' }),
+      runProcess: async () => ({ code: 0, signal: null, stdout: 'diff --git a/x b/x\n+1\n', stderr: '', timedOut: false }),
+      adapterFactories: {
+        claude: (deps) => {
+          captured = deps;
+          return {
+            engine: 'claude',
+            async run() {
+              return { juror: { engine: 'claude', probe: 'appsec', author: 'hook' }, verdict: 'PASS', severity: 'NONE', findings: [], summary: '' };
+            },
+          };
+        },
+      },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(captured.gateway, { engine: 'claude', credential: 'REAL-KEY' });
+  });
+
+  it('leaves the adapter deps untouched without --gateway', async () => {
+    const cwd = tempDir();
+    let captured = null;
+    await run(['review', '--author', 'hook', '--json'], {
+      cwd,
+      env: { ANTHROPIC_API_KEY: 'REAL-KEY' },
+      doctor: () => [{ engine: 'claude', status: 'READY', command: 'claude', path: 'claude' }],
+      resolveBinary: () => ({ command: 'git', prefixArgs: [], wrapper: 'direct' }),
+      runProcess: async () => ({ code: 0, signal: null, stdout: 'diff --git a/x b/x\n+1\n', stderr: '', timedOut: false }),
+      adapterFactories: {
+        claude: (deps) => {
+          captured = deps;
+          return {
+            engine: 'claude',
+            async run() {
+              return { juror: { engine: 'claude', probe: 'appsec', author: 'hook' }, verdict: 'PASS', severity: 'NONE', findings: [], summary: '' };
+            },
+          };
+        },
+      },
+    });
+    assert.equal('gateway' in (captured ?? {}), false);
+  });
+});
+
+describe('cli: trace', () => {
+  const TRACE = {
+    messages: [
+      { role: 'user', content: 'busca la factura 42' },
+      { role: 'assistant', content: 'pagada', tool_calls: [{ name: 'search', arguments: { q: '42' } }] },
+    ],
+    ground_truth: { required_steps: ['search'] },
+  };
+
+  function traceFile(content) {
+    const dir = tempDir();
+    const file = path.join(dir, 'trace.json');
+    fs.writeFileSync(file, content, 'utf8');
+    return { dir, file };
+  }
+
+  it('scores a clean trace and exits 0', async () => {
+    const { dir, file } = traceFile(JSON.stringify(TRACE));
+    const result = await run(['trace', path.basename(file), '--deterministic', '--no-color'], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /VERDICT: PASS/);
+    assert.match(result.stdout, /tool selection accuracy\s+1\.00/);
+    assert.match(result.stdout, /workflow completion\s+1\.00/);
+  });
+
+  it('blocks a trace that leaks a secret before any probe runs', async () => {
+    const { dir, file } = traceFile(JSON.stringify({ messages: [{ role: 'user', content: 'key sk-ant-abcdefghijklmnopqrstuvwxyz0123' }] }));
+    const result = await run(['trace', path.basename(file), '--deterministic'], { cwd: dir });
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /SECRET SHIELD: LEAK/);
+    assert.match(result.stderr, /SECRET_LEAK/);
+    assert.equal(/METRIC/.test(result.stdout), false);
+  });
+
+  it('emits one parseable JSON object with --json', async () => {
+    const { dir, file } = traceFile(JSON.stringify(TRACE));
+    const result = await run(['trace', path.basename(file), '--deterministic', '--json'], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.verdict, 'PASS');
+    assert.equal(parsed.metrics.workflow_completion, 1);
+    assert.equal(parsed.trace_id.length > 0, true);
+  });
+
+  it('reads the trace from stdin when no file is given', async () => {
+    const { Readable } = await import('node:stream');
+    const result = await run(['trace', '--deterministic', '--json'], {
+      cwd: tempDir(),
+      stdin: Readable.from([Buffer.from(JSON.stringify(TRACE))]),
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).verdict, 'PASS');
+  });
+
+  it('refuses a trace with neither a file nor stdin', async () => {
+    const result = await run(['trace', '--deterministic'], { cwd: tempDir(), stdin: null });
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unexpected_argument/);
+  });
+
+  it('rejects two trace files', async () => {
+    const result = await run(['trace', 'one.json', 'two.json'], { cwd: tempDir() });
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unexpected_argument/);
+  });
+});
+
+describe('cli: trace fail-closed', () => {
+  function file(content) {
+    const dir = tempDir();
+    const target = path.join(dir, 'trace.json');
+    fs.writeFileSync(target, content, 'utf8');
+    return { dir, name: path.basename(target) };
+  }
+
+  const CASES = [
+    ['truncated JSON', '{"trace_id":"broken",'],
+    ['a scalar', '42'],
+    ['non-array messages', '{"messages":"not-an-array"}'],
+    ['an empty object', '{}'],
+  ];
+
+  for (const [label, content] of CASES) {
+    it('refuses ' + label + ' with trace_unusable', async () => {
+      const { dir, name } = file(content);
+      const result = await run(['trace', name, '--deterministic'], { cwd: dir });
+      assert.equal(result.code, 2, result.stdout);
+      assert.match(result.stderr, /trace_unusable/);
+      assert.equal(/VERDICT: PASS/.test(result.stdout), false);
+    });
+  }
+
+  it('refuses empty stdin', async () => {
+    const { Readable } = await import('node:stream');
+    const result = await run(['trace', '--deterministic'], { cwd: tempDir(), stdin: Readable.from([]) });
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /trace_unusable/);
+  });
+});
+
+describe('cli: doctor --json', () => {
+  it('emits parseable JSON with the engine reports', async () => {
+    const result = await run(['doctor', '--json'], { doctor: fakeDoctor });
+    assert.equal(result.code, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(Array.isArray(parsed.engines), true);
+    assert.equal(parsed.engines.length, REPORTS.length);
+    assert.equal(parsed.engines[0].engine, 'claude');
+    assert.equal(result.stdout.includes('ENGINE    STATUS'), false);
   });
 });

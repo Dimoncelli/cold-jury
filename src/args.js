@@ -4,7 +4,7 @@ import { UsageError } from './errors.js';
 export const ENGINES = Object.freeze(['claude', 'codex', 'gemini', 'opencode', 'ollama']);
 export const PROBES = Object.freeze(['appsec', 'correctness', 'surgical']);
 export const THRESHOLDS = Object.freeze(['P0', 'P1', 'P2']);
-export const SUBCOMMANDS = Object.freeze(['doctor', 'review', 'install-hook']);
+export const SUBCOMMANDS = Object.freeze(['doctor', 'review', 'install-hook', 'trace']);
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 1_800_000;
@@ -12,6 +12,7 @@ export const MAX_JURORS = 3;
 export const DEFAULT_MAX_BYTES = 300_000;
 export const MAX_SPEC_BYTES = 20_000;
 export const MIN_MAX_BYTES = 1_000;
+export const MAX_ALLOWED_BYTES = 2_000_000;
 export const AUTHORS = Object.freeze([...ENGINES, 'hook', 'ci']);
 export const HOOK_TYPES = Object.freeze(['pre-commit', 'pre-push']);
 export const RANGE_PATTERN = /^[A-Za-z0-9._/~^:@{}\-]+$/;
@@ -38,6 +39,9 @@ const BOOLEAN_FLAGS = new Set([
   'help',
   'version',
   'doctor',
+  'gateway',
+  'sterile',
+  'deterministic',
 ]);
 
 const SHORT_FLAGS = new Map([
@@ -63,6 +67,10 @@ export function defaults() {
     output: null,
     force: false,
     hookType: 'pre-push',
+    gateway: false,
+    deterministic: false,
+    // Positional trace file; absent means "read stdin".
+    file: null,
   };
 }
 
@@ -112,8 +120,8 @@ function parseList(raw, allowed, flag) {
 function parseMaxBytes(raw) {
   if (!/^\d+$/.test(raw)) throw new UsageError('invalid_max_bytes', raw);
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < MIN_MAX_BYTES) {
-    throw new UsageError('invalid_max_bytes', `must be at least ${MIN_MAX_BYTES}`);
+  if (!Number.isInteger(value) || value < MIN_MAX_BYTES || value > MAX_ALLOWED_BYTES) {
+    throw new UsageError('invalid_max_bytes', `must be between ${MIN_MAX_BYTES} and ${MAX_ALLOWED_BYTES}`);
   }
   return value;
 }
@@ -156,6 +164,7 @@ export function parseArgs(argv = []) {
         if (inline !== undefined) throw new UsageError('unexpected_value', `--${name}`);
         if (name === 'no-color') flags.color = false;
         else if (name === 'allow-same-engine') flags.allowSameEngine = true;
+        else if (name === 'sterile') flags.gateway = true;
         else flags[name] = true;
         continue;
       }
@@ -209,6 +218,13 @@ export function parseArgs(argv = []) {
     if (token.startsWith('-')) throw new UsageError('unknown_flag', token);
 
     if (command) {
+      if (command === 'trace' && flags.file === null) {
+        if (token.length > 1024 || /\p{Cc}/u.test(token)) {
+          throw new UsageError('invalid_argument', 'trace file path');
+        }
+        flags.file = token;
+        continue;
+      }
       throw new UsageError('unexpected_argument', token);
     }
     const candidate = token.toLowerCase();
@@ -262,7 +278,7 @@ export function resolveOutputPath(raw, cwd = process.cwd()) {
 
 export function usage(command) {
   const header = [
-    'cold-jury 0.1.0',
+    'cold-jury 0.2.0',
     '',
     'Usage: cold-jury <subcommand> [flags]',
     '',
@@ -270,6 +286,7 @@ export function usage(command) {
     '  doctor                  Detect the review engines available in PATH',
     '  review                  Run the sterile room: shield, diff, jurors, verdict',
     '  install-hook            Install a hook in .git/hooks (--type pre-commit|pre-push)',
+    '  trace [file]            Score an AgentTrace (JSON/JSONL) with 4 metrics and 3 probes',
     '',
     'review flags:',
     '  --staged                Review `git diff --cached` (default)',
@@ -283,8 +300,18 @@ export function usage(command) {
     '  --allow-same-engine     Let the author engine judge, only for sterile room tests',
     '  --timeout <ms>          Per juror timeout (default: 120000)',
     '  --max-bytes <bytes>     Diff size cap before truncation (default: 300000)',
+    '  --gateway, --sterile     Route the engine API through a local credential-injection gateway',
     '  --output <path>         Write the verdict JSON to a .json path inside the repo',
     '  --no-color              Disable ANSI colors (NO_COLOR=1 and non-TTY streams also do)',
+    '',
+    'trace flags:',
+    '  [file]                  Trace file (JSON object/array or .jsonl); reads stdin when omitted',
+    '  --deterministic         Use the built-in deterministic probes, no model',
+    '  --jurors <list>         Engines for the optional trace juror',
+    '  --fail-on <P0|P1|P2>    Blocking threshold (default: P1)',
+    '  --json                  Print the trace verdict as JSON only',
+    '  --output <path>         Write the trace verdict JSON to a .json path inside the repo',
+    '  --no-color              Disable ANSI colors',
     '',
     'Global flags:',
     '  --doctor                Alias of `cold-jury doctor`',

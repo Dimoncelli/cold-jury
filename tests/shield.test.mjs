@@ -204,3 +204,39 @@ describe('shield: short circuit verdict', () => {
     assert.deepEqual(verdict.errors, []);
   });
 });
+
+describe('shield: redaction performance (no ReDoS)', () => {
+  it('scans a 300 kB blob without spaces in under 500 ms', () => {
+    const started = Date.now();
+    shield('a'.repeat(300_000));
+    assert.ok(Date.now() - started < 500, 'plain blob took too long');
+  });
+
+  it('scans a 250 kB base64 data URL in under 500 ms', () => {
+    const started = Date.now();
+    shield('data:image/png;base64,' + 'A'.repeat(250_000));
+    assert.ok(Date.now() - started < 500, 'base64 blob took too long');
+  });
+});
+
+describe('shield: JSON credentials and bearer headers', () => {
+  const CASES = [
+    ['{"api_key":"a8f5f167f44f4964e6c998dee827110c"}', 'REC-1'],
+    ['{"password": "Hunter2Hunter2"}', 'REC-2'],
+    ['authorization: Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0', 'REC-3'],
+  ];
+
+  for (const [input, label] of CASES) {
+    it('redacts and flags ' + label, () => {
+      const result = shield(input);
+      assert.equal(result.leak, true);
+      assert.ok(result.redactions >= 1);
+      assert.equal(/a8f5f167f44f4964e6c998dee827110c|Hunter2Hunter2|9f8e7d6c5b4a39281706f5e4d3c2b1a0/.test(result.diffRedacted), false);
+    });
+  }
+
+  it('does not flag short ordinary text', () => {
+    const result = shield('authorization: Bearer abc');
+    assert.equal(result.leak, false);
+  });
+});

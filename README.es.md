@@ -73,7 +73,7 @@ npx --yes github:Dimoncelli/cold-jury review --author hook --spec "Qué hace est
 ```
 $ npx --yes github:Dimoncelli/cold-jury review --spec "Añadir lógica de reintento al manejador de webhooks"
 
-cold-jury 0.1.0 | author claude | jurors codex,opencode,ollama
+cold-jury 0.2.0 | author claude | jurors codex,opencode,ollama
 SECRET SHIELD: CLEAN (0 redactions)
 
 JUROR        PROBE         LEVEL  LOCATION                FINDING
@@ -96,6 +96,7 @@ Añade `--output .cold-jury/verdict.json` para guardar ese mismo JSON en disco, 
 | `cold-jury doctor` | Detecta los motores en `PATH` e imprime `READY`, `OFFLINE` (binario presente, daemon apagado) o `NOT_FOUND`. También existe como `cold-jury --doctor`. |
 | `cold-jury review [flags]` | Ejecuta la sala estéril: escudo, diff, jurados y veredicto agregado. |
 | `cold-jury install-hook [--type pre-commit\|pre-push] [--force]` | Instala un hook idempotente. El de pre-push lee de stdin las referencias empujadas y revisa el rango real. |
+| `cold-jury trace [file]` | Puntúa una traza de agente: cuatro métricas deterministas y tres sondas, desde un fichero JSON/JSONL o por stdin. |
 | `cold-jury --version`, `-v` | Imprime `cold-jury <versión>` y sale con `0`. |
 | `cold-jury --help`, `-h` | Imprime la lista completa de flags y sale con `0`. |
 
@@ -113,8 +114,9 @@ Añade `--output .cold-jury/verdict.json` para guardar ese mismo JSON en disco, 
 | `--fail-on <P0\|P1\|P2>` | `P1` | Umbral de bloqueo. `P0` bloquea solo con P0, `P1` con P0 y P1, `P2` con los tres. |
 | `--allow-same-engine` | inactivo | Permite que el motor autor juzgue. La regla Autor distinto de Jurado sigue activa por defecto. |
 | `--timeout <ms>` | `120000` | Timeout por jurado, se mata con `SIGKILL` y `taskkill /T` en Windows al vencer. |
-| `--max-bytes <bytes>` | `300000` | Tope del diff. Los diffs mayores se truncan en un salto de línea y quedan marcados en el veredicto. |
+| `--max-bytes <bytes>` | `300000` | Tope del diff (`1000`–`2000000`). Los diffs mayores se truncan en un salto de línea y quedan marcados en el veredicto. |
 | `--output <ruta>` | ninguna | Escribe el JSON del veredicto en una ruta `.json` dentro del repositorio. Los symlinks se rechazan. |
+| `--gateway`, `--sterile` | off | Inyecta la credencial del proveedor mediante un gateway local con allowlist, fuera del entorno del hijo. |
 | `--no-color` | auto | Desactiva los colores ANSI. |
 
 ### Códigos de salida
@@ -124,6 +126,64 @@ Añade `--output .cold-jury/verdict.json` para guardar ese mismo JSON en disco, 
 | `0` | `PASS`: ningún hallazgo en o por encima del umbral. |
 | `1` | `BLOCK`: al menos un hallazgo en o por encima del umbral, o un `P0 SECRET_LEAK`. |
 | `2` | Error de uso o configuración, o `engine_execution_failed` cuando ningún jurado completó una sonda. |
+
+## Gateway de credenciales (`--gateway`)
+
+`--gateway` (alias `--sterile`) mantiene la clave real del proveedor en el proceso padre y elimina las variables sensibles (`KEY`, `TOKEN`, `SECRET`, `CREDENTIAL`, `OAUTH`, `PASSWORD`) del entorno del hijo. El gateway escucha en un puerto efímero de `127.0.0.1`, el hijo recibe un `COLD_JURY_EPHEMERAL_TOKEN` aleatorio y `ANTHROPIC_BASE_URL` (u `OPENAI_BASE_URL`, `GEMINI_BASE_URL`, `OPENCODE_BASE_URL`) apuntando a él, y cada petición se comprueba contra la allowlist del proveedor antes de añadir la credencial (las peticiones por encima de `2 MB` devuelven `413 PAYLOAD_TOO_LARGE`). Cualquier otro host recibe `403 FORBIDDEN_HOST` y no se reenvía; sin credencial el gateway responde `503 NO_CREDENTIAL`, y una ejecución sin credencial se salta el gateway.
+
+```bash
+# La clave se queda aquí; el hijo solo ve una URL local y un token desechable.
+ANTHROPIC_API_KEY=... cold-jury review --author hook --gateway --spec "Añade reintentos"
+```
+
+`doctor` añade una columna `GATEWAY` (`yes` cuando hay credencial de ese motor en el entorno, `no` en caso contrario) y soporta salida `--json`. Ollama es local y nunca usa el gateway.
+
+## Traza de agente (`cold-jury trace`)
+
+`trace` revisa lo que hizo un agente, no un diff. Acepta un objeto JSON, un array JSON de pasos o un `.jsonl` (un paso por línea), limita la entrada a 300000 bytes y la pasa por el escudo de secretos antes que nada. Un secreto filtrado corta el flujo con `BLOCK` y `SL-001`, sin ejecutar sondas; si la redacción deja la traza inválida o vacía, falla cerrado con código de salida `2` (`trace_unusable`).
+
+```json
+{
+  "trace_id": "run-42",
+  "messages": [{ "role": "user", "content": "Resume la factura 42" }],
+  "tool_calls": [{ "id": "TC-001", "name": "search", "arguments": { "q": "invoice 42" }, "ok": true }],
+  "ground_truth": { "required_tools": ["search"], "required_steps": ["search", "export"], "min_turns": 2 }
+}
+```
+
+| Métrica | Fórmula |
+|---------|---------|
+| `tool_selection_accuracy` | Coincidencia con `required_tools`, o proporción de llamadas válidas si no hay ground truth. Sin llamadas: `1.00` sin ground truth y `0.00` con él. |
+| `mcp_compliance` | `1 - inválidas / total`, donde inválida es `ok: false`, `error` no vacío o `arguments` que no es objeto. Sin llamadas: `1.00`. |
+| `turn_efficiency` | `min_turns / turnos` si hay `min_turns`; si no, `1 - redundantes / turnos`, contando como redundante el mismo `name` con los mismos `arguments`. |
+| `workflow_completion` | Proporción de `required_steps` completados por nombre de herramienta o contenido de mensaje. Sin ground truth: `1.00`. |
+
+Tres sondas añaden hallazgos: `delegation_quality` (una llamada `delegate`/`agent`/`handoff` sin payload usable bloquea), `instruction_compliance` (un P1 por paso obligatorio ausente) y `prompt_injection_detection` (P1 cuando el asistente obedece una orden inyectada, P2 cuando solo aparece). `--deterministic` usa el evaluador interno; sin él, el primer motor READY juzga cada sonda y, si no hay jurado, se degrada a determinista.
+
+```bash
+cold-jury trace trace.json --deterministic
+cat trace.jsonl | cold-jury trace --deterministic --json
+```
+
+```
+cold-jury 0.2.0 | trace run-42 | PASS
+SECRET SHIELD: CLEAN (0 redactions)
+
+METRIC                       VALUE
+tool selection accuracy      1.00
+MCP compliance               1.00
+turn efficiency              0.50
+workflow completion          0.67
+
+TRACE PROBES
+delegation_quality           PASS (NONE)
+instruction_compliance       BLOCK (P1)
+prompt_injection_detection   PASS (NONE)
+
+[P1] instruction_compliance IC-001: Required step "export" was never completed
+
+VERDICT: BLOCK (exit 1) | severity P1
+```
 
 ## Integración CI (GitHub Actions)
 

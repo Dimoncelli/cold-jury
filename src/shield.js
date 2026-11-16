@@ -86,7 +86,7 @@ export const SECRET_PATTERNS = Object.freeze([
   {
     id: 'URI_CREDENTIALS',
     severity: 'P0',
-    regex: /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]{4,}@/gi,
+    regex: /([a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s:@]{1,256}:[^/\s@]{1,256}@/gi,
     replacement: '$1[REDACTED_CREDENTIALS]@',
   },
   {
@@ -96,10 +96,26 @@ export const SECRET_PATTERNS = Object.freeze([
     replacement: '[REDACTED_APIKEY]',
   },
   {
+    id: 'JSON_CREDENTIAL',
+    severity: 'P0',
+    // {"api_key": "..."} / {"password": "..."}: a P0 leak, unlike the generic ENV hint.
+    regex:
+      /["'](?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)["']\s*:\s*["'][^"'\s]{8,512}["']/gi,
+    replacement: '"[REDACTED_JSON_SECRET]"',
+  },
+  {
+    id: 'AUTH_BEARER',
+    severity: 'P0',
+    regex: /authorization\s*:\s*bearer\s+[A-Za-z0-9._-]{20,512}/gi,
+    replacement: 'authorization: Bearer [REDACTED_BEARER]',
+  },
+  {
     id: 'ENV',
     severity: 'P1',
+    // Name, optional quotes, separator, optional quotes, bounded value. Every
+    // quantifier is capped so a 300 kB blob without spaces stays linear.
     regex:
-      /([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret))\s*[:=]\s*["']?[^\s"']{8,}["']?/gi,
+      /["']?([A-Za-z0-9_]{0,64}(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret))["']?\s*[:=]\s*["']?[^\s"']{8,512}["']?/gi,
     replacement: '$1=[REDACTED_ENV]',
   },
 ]);

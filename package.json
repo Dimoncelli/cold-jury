@@ -1,6 +1,6 @@
 {
   "name": "cold-jury",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cross-CLI hostile code review: three parallel jurors, pre-flight secret redaction and a deterministic PASS/BLOCK gate. Zero dependencies.",
   "type": "module",
   "bin": {

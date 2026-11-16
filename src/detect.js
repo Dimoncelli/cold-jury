@@ -1,4 +1,5 @@
 import { resolveBinary } from './resolve.js';
+import { PROVIDERS } from './gateway.js';
 
 export const ENGINES = Object.freeze(['claude', 'codex', 'gemini', 'opencode', 'ollama']);
 export const NEUTRAL_AUTHORS = Object.freeze(['hook', 'ci']);
@@ -57,11 +58,14 @@ export async function doctor(options = {}) {
 
   const reports = ENGINES.map((engine) => {
     const plan = resolveImpl(engine, { env, platform });
+    const keyEnv = PROVIDERS[engine]?.keyEnv ?? null;
     return {
       engine,
       status: plan ? 'READY' : 'NOT_FOUND',
       command: plan?.command ?? '',
       path: plan?.source ?? plan?.command ?? '',
+      // A local gateway is possible only when a provider credential is present; ollama needs none.
+      gateway: Boolean(keyEnv && env?.[keyEnv]),
     };
   });
 

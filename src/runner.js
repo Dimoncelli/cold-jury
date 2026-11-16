@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process';
+import crypto, { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +7,7 @@ import { quoteWindowsArg, resolveBinary } from './resolve.js';
 import { buildPrompt } from './probes.js';
 import { redactText } from './shield.js';
 import { errorDictamen, extractJurorJson } from './verdict.js';
+import { createGateway, providerFor } from './gateway.js';
 
 const BASE_ENV_KEYS = Object.freeze([
   'PATH',
@@ -54,6 +56,36 @@ export function sanitizeEnv(engine, source = process.env) {
     }
   }
   env.NO_COLOR = '1';
+  return env;
+}
+
+/** Random opaque token handed to the child; the gateway never validates it. */
+export function ephemeralToken(cryptoImpl = crypto) {
+  if (typeof cryptoImpl?.randomBytes === 'function') {
+    return cryptoImpl.randomBytes(32).toString('base64url');
+  }
+  const bytes = new Uint8Array(32);
+  cryptoImpl.getRandomValues(bytes);
+  return Buffer.from(bytes).toString('base64url');
+}
+
+/**
+ * Sterile env for the gateway mode: the provider key becomes the ephemeral token,
+ * the base URL points at the local gateway and the real credential never appears.
+ */
+export function buildGatewayEnv(engine, source, gateway, token) {
+  const env = sanitizeEnv(engine, source);
+  const provider = providerFor(engine);
+  // Sibling variables (GOOGLE_API_KEY, ANTHROPIC_AUTH_TOKEN, GOOGLE_APPLICATION_CREDENTIALS...)
+  // can carry the real credential too: purge every credential-shaped name before injecting.
+  for (const key of Object.keys(env)) {
+    if (/(KEY|TOKEN|SECRET|CREDENTIAL|OAUTH|PASSWORD)/i.test(key)) delete env[key];
+  }
+  if (provider.keyEnv) {
+    env[provider.keyEnv] = token;
+  }
+  if (provider.baseUrlEnv) env[provider.baseUrlEnv] = gateway.baseUrl;
+  env.COLD_JURY_EPHEMERAL_TOKEN = token;
   return env;
 }
 
@@ -201,14 +233,38 @@ export async function runSpawnEngine(config) {
     return errorDictamen({ engine, probe, author, reason: `engine_not_found: ${config.binName}` });
   }
 
-  const result = await runImpl(plan, {
-    args: config.args,
-    stdin: prompt,
-    timeoutMs,
-    cwd: config.cwd,
-    env: sanitizeEnv(engine, deps.env ?? process.env),
-    spawn: deps.spawn,
-  });
+  const sourceEnv = deps.env ?? process.env;
+  const gatewayConfig = config.gateway ?? deps.gateway ?? null;
+  const provider = providerFor(engine);
+  // An explicit null means "no credential": never fall back to the environment.
+  const explicitCredential =
+    gatewayConfig && Object.prototype.hasOwnProperty.call(gatewayConfig, 'credential')
+      ? gatewayConfig.credential
+      : undefined;
+  const requestedCredential =
+    explicitCredential === undefined ? (gatewayConfig && provider.keyEnv ? sourceEnv[provider.keyEnv] : null) : explicitCredential;
+
+  let gateway = null;
+  let env = sanitizeEnv(engine, sourceEnv);
+  if (gatewayConfig && requestedCredential) {
+    const createImpl = deps.createGateway ?? createGateway;
+    gateway = await createImpl({ provider, credential: requestedCredential, ...(deps.gatewayDeps ?? {}) });
+    env = buildGatewayEnv(engine, sourceEnv, gateway, ephemeralToken(deps.cryptoImpl));
+  }
+
+  let result;
+  try {
+    result = await runImpl(plan, {
+      args: config.args,
+      stdin: prompt,
+      timeoutMs,
+      cwd: config.cwd,
+      env,
+      spawn: deps.spawn,
+    });
+  } finally {
+    if (gateway) await gateway.close();
+  }
 
   const parsed = extractJurorJson(result.stdout, engine, { nonce });
   if (!parsed) {

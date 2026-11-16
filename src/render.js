@@ -138,10 +138,74 @@ export function renderJson(verdict) {
   return JSON.stringify(verdict, null, 2);
 }
 
+const METRIC_LABELS = Object.freeze([
+  ['tool_selection_accuracy', 'tool selection accuracy'],
+  ['mcp_compliance', 'MCP compliance'],
+  ['turn_efficiency', 'turn efficiency'],
+  ['workflow_completion', 'workflow completion'],
+]);
+
+/** Human table for `cold-jury trace`: metrics, probe verdicts and findings. */
+export function renderTrace(verdict, options = {}) {
+  const color = options.color === true;
+  const columns = Number.isInteger(options.columns) && options.columns > 40 ? options.columns : DEFAULT_COLUMNS;
+  const lines = [];
+
+  lines.push(
+    paint(
+      `cold-jury ${verdict.version} | trace ${verdict.trace_id || 'unknown'} | ${verdict.verdict}`,
+      ANSI.bold,
+      color,
+    ),
+  );
+  lines.push(
+    verdict.secretShield?.leak
+      ? paint(`SECRET SHIELD: LEAK (${verdict.secretShield.redactions} redactions)`, ANSI.red, color)
+      : `SECRET SHIELD: CLEAN (${verdict.secretShield?.redactions ?? 0} redactions)`,
+  );
+  const hasMetrics = verdict.metrics && typeof verdict.metrics === 'object';
+  if (hasMetrics) {
+    lines.push('');
+    lines.push('METRIC                       VALUE');
+    for (const [key, label] of METRIC_LABELS) {
+      const value = Number(verdict.metrics?.[key]);
+      lines.push(`${pad(label, 28)} ${(Number.isFinite(value) ? value : 0).toFixed(2)}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('TRACE PROBES');
+  for (const [probe, result] of Object.entries(verdict.probes ?? {})) {
+    const gate = result?.verdict === 'BLOCK' ? 'BLOCK' : 'PASS';
+    lines.push(`${pad(probe, 28)} ${gate} (${result?.severity ?? 'NONE'})`);
+  }
+
+  lines.push('');
+  if (!verdict.findings || verdict.findings.length === 0) {
+    lines.push('(no findings)');
+  } else {
+    for (const finding of verdict.findings) {
+      const label = `[${finding.severity}] ${finding.probe ? `${finding.probe} ` : ''}${finding.id}: ${finding.title}`;
+      lines.push(truncateRight(label, columns));
+    }
+  }
+
+  if (verdict.note) lines.push(`NOTE: ${truncateRight(verdict.note, columns - 6)}`);
+  lines.push('');
+  lines.push(
+    paint(
+      `VERDICT: ${verdict.verdict} (exit ${verdict.exitCode}) | severity ${verdict.severity}`,
+      verdict.verdict === 'BLOCK' ? ANSI.red : ANSI.green,
+      color,
+    ),
+  );
+  return lines.join('\n');
+}
+
 export function renderDoctor(reports, options = {}) {
   const color = options.color === true;
   const engineWidth = reports.reduce((width, report) => Math.max(width, report.engine.length), 6);
-  const lines = [`${pad('ENGINE', engineWidth)}  ${pad('STATUS', 9)}  COMMAND`];
+  const lines = [`${pad('ENGINE', engineWidth)}  ${pad('STATUS', 9)}  ${pad('GATEWAY', 7)}  COMMAND`];
   for (const report of reports) {
     const label = pad(report.status, 9);
     const painted = paint(
@@ -149,7 +213,8 @@ export function renderDoctor(reports, options = {}) {
       report.status === 'READY' ? ANSI.green : report.status === 'OFFLINE' ? ANSI.yellow : ANSI.dim,
       color,
     );
-    lines.push(`${pad(report.engine, engineWidth)}  ${painted}  ${stripControl(report.path) || '-'}`);
+    const gateway = pad(report.gateway ? 'yes' : 'no', 7);
+    lines.push(`${pad(report.engine, engineWidth)}  ${painted}  ${gateway}  ${stripControl(report.path) || '-'}`);
   }
   return lines.join('\n');
 }

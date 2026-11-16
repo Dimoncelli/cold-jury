@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   AUTHORS,
   DEFAULT_MAX_BYTES,
+  SUBCOMMANDS,
   DEFAULT_TIMEOUT_MS,
   ENGINES,
   MAX_TIMEOUT_MS,
@@ -257,5 +258,41 @@ describe('args: usage text stays in sync with the parser', () => {
   it('lists the exact engine and probe vocabulary', () => {
     assert.deepEqual([...ENGINES], ['claude', 'codex', 'gemini', 'opencode', 'ollama']);
     assert.deepEqual([...PROBES], ['appsec', 'correctness', 'surgical']);
+  });
+});
+
+describe('args: gateway and trace', () => {
+  it('enables the gateway with --gateway and the --sterile alias', () => {
+    assert.equal(parseArgs(['review', '--gateway']).flags.gateway, true);
+    assert.equal(parseArgs(['review', '--sterile']).flags.gateway, true);
+    assert.equal(parseArgs(['review']).flags.gateway, false);
+  });
+
+  it('rejects --gateway=x as a boolean misuse', () => {
+    failsWith(['review', '--gateway=x'], 'unexpected_value');
+    failsWith(['review', '--sterile=x'], 'unexpected_value');
+  });
+
+  it('accepts one positional trace file and rejects a second', () => {
+    const { command, flags } = parseArgs(['trace', 'trace.json', '--deterministic']);
+    assert.equal(command, 'trace');
+    assert.equal(flags.file, 'trace.json');
+    assert.equal(flags.deterministic, true);
+    failsWith(['trace', 'one.json', 'two.json'], 'unexpected_argument');
+  });
+
+  it('--sterile is a flag, never a subcommand', () => {
+    const parsed = parseArgs(['--sterile']);
+    assert.equal(parsed.command, 'help');
+    assert.equal(parsed.flags.gateway, true);
+    assert.equal(SUBCOMMANDS.includes('sterile'), false);
+  });
+});
+
+describe('args: max-bytes ceiling', () => {
+  it('accepts the 2 MB ceiling and rejects anything larger', () => {
+    assert.equal(parseArgs(['review', '--max-bytes', '2000000']).flags.maxBytes, 2_000_000);
+    failsWith(['review', '--max-bytes', '2000001'], 'invalid_max_bytes');
+    failsWith(['review', '--max-bytes', '999999999'], 'invalid_max_bytes');
   });
 });

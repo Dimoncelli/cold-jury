@@ -132,7 +132,7 @@ describe('manifests: line endings', () => {
     const crlf = parseFrontmatter(toCrlf(readSkill()));
     assert.deepEqual(crlf, lf);
     assert.equal(crlf.name, 'cold-jury');
-    assert.equal(crlf.metadata.version, '0.1.0');
+    assert.equal(crlf.metadata.version, '0.2.0');
   });
 
   it('parses agents/openai.yaml identically with LF and CRLF', () => {
@@ -140,7 +140,7 @@ describe('manifests: line endings', () => {
     const crlf = parseYaml(toCrlf(readAgent()));
     assert.deepEqual(crlf, lf);
     assert.equal(crlf.interface.display_name, 'Cold Jury');
-    assert.deepEqual(crlf.commands, ['doctor', 'review', 'install-hook']);
+    assert.deepEqual(crlf.commands, ['doctor', 'review', 'install-hook', 'trace']);
   });
 
   it('keeps the README scans identical with LF and CRLF', () => {
@@ -172,7 +172,7 @@ describe('manifests: SKILL.md', () => {
     assert.deepEqual(Object.keys(fields).sort(), ['description', 'license', 'metadata', 'name']);
     assert.equal(fields.name, 'cold-jury');
     assert.equal(fields.license, 'MIT');
-    assert.equal(fields.metadata.version, '0.1.0');
+    assert.equal(fields.metadata.version, '0.2.0');
     assert.equal('version' in fields, false, 'version must live under metadata');
   });
 
@@ -188,7 +188,7 @@ describe('manifests: SKILL.md', () => {
     assert.ok(body.includes('node <skill-dir>/bin/cold-jury.mjs'));
     assert.ok(body.includes('npx --yes github:Dimoncelli/cold-jury'));
     assert.equal(body.includes('npx cold-jury'), false);
-    for (const command of ['doctor', 'review', 'install-hook']) {
+    for (const command of ['doctor', 'review', 'install-hook', 'trace']) {
       assert.ok(body.includes(command), `missing ${command}`);
     }
     for (const flag of ['--spec', '--author', '--json', '--output', '--fail-on', '--allow-same-engine']) {
@@ -201,11 +201,11 @@ describe('manifests: codex agent file', () => {
   it('declares a node entrypoint and the three commands', () => {
     const fields = parseYaml(readAgent());
     assert.equal(fields.name, 'cold-jury');
-    assert.equal(fields.version, '0.1.0');
+    assert.equal(fields.version, '0.2.0');
     assert.equal(fields.entrypoint, 'bin/cold-jury.mjs');
     assert.equal(fields.runtime, 'node');
     assert.equal(fields.node, '>=20');
-    assert.deepEqual(fields.commands, ['doctor', 'review', 'install-hook']);
+    assert.deepEqual(fields.commands, ['doctor', 'review', 'install-hook', 'trace']);
   });
 
   it('ships the interface block Codex expects', () => {
@@ -222,7 +222,7 @@ describe('manifests: claude code plugin', () => {
   it('parses plugin.json with repository metadata', () => {
     const plugin = JSON.parse(read('.claude-plugin/plugin.json'));
     assert.equal(plugin.name, 'cold-jury');
-    assert.equal(plugin.version, '0.1.0');
+    assert.equal(plugin.version, '0.2.0');
     assert.equal(plugin.license, 'MIT');
     assert.equal(plugin.author.name, 'Dimoncelli');
     assert.deepEqual(plugin.skills, ['SKILL.md']);
@@ -250,7 +250,7 @@ describe('manifests: package.json', () => {
     assert.equal(pkg.bin['cold-jury'], './bin/cold-jury.mjs');
     assert.equal(pkg.engines.node, '>=20');
     assert.equal(pkg.license, 'MIT');
-    assert.equal(pkg.version, '0.1.0');
+    assert.equal(pkg.version, '0.2.0');
     assert.equal('postinstall' in (pkg.scripts ?? {}), false);
   });
 
@@ -282,6 +282,9 @@ describe('readme: CLI parity and safe examples', () => {
     '--doctor',
     '--force',
     '--type',
+    '--gateway',
+    '--sterile',
+    '--deterministic',
   ]);
 
   for (const file of ['README.md', 'README.es.md']) {
@@ -294,7 +297,7 @@ describe('readme: CLI parity and safe examples', () => {
 
     it(`${file} names the real subcommands`, () => {
       const text = read(file);
-      for (const command of ['cold-jury doctor', 'cold-jury review', 'cold-jury install-hook']) {
+      for (const command of ['cold-jury doctor', 'cold-jury review', 'cold-jury install-hook', 'cold-jury trace']) {
         assert.ok(text.includes(command), `${file} is missing ${command}`);
       }
     });
@@ -408,5 +411,21 @@ describe('repository: line ending policy', () => {
       assert.ok(read(file).includes('actions/checkout@v7'));
       assert.ok(read(file).includes('actions/setup-node@v7'));
     }
+  });
+});
+
+describe('manifests: doctor gateway field', () => {
+  it('reports gateway availability per engine and never for ollama', async () => {
+    const { doctor } = await import('../src/detect.js');
+    const reports = await doctor({
+      env: { ANTHROPIC_API_KEY: 'present', OPENAI_API_KEY: '' },
+      resolveBinary: () => ({ command: 'x', prefixArgs: [], wrapper: 'direct', source: 'x' }),
+      ollamaProbe: async () => true,
+    });
+    const byEngine = Object.fromEntries(reports.map((report) => [report.engine, report.gateway]));
+    assert.equal(byEngine.claude, true);
+    assert.equal(byEngine.codex, false);
+    assert.equal(byEngine.gemini, false);
+    assert.equal(byEngine.ollama, false);
   });
 });

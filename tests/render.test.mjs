@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { findingLocation, renderDoctor, renderTable, stripControl, truncateLeft } from '../src/render.js';
+import { findingLocation, renderDoctor, renderJson, renderTable, renderTrace, stripControl, truncateLeft } from '../src/render.js';
 
 function verdict(overrides = {}) {
   return {
@@ -116,8 +116,65 @@ describe('render: doctor table', () => {
     );
     const lines = text.split('\n');
     assert.equal(lines.length, 4);
-    assert.match(lines[1], /^claude\s+READY\s+\/bin\/claude\.exe$/);
-    assert.match(lines[2], /^ollama\s+OFFLINE\s+\/bin\/ollama\.exe$/);
-    assert.match(lines[3], /^codex\s+NOT_FOUND\s+-$/);
+    assert.match(lines[0], /GATEWAY/);
+    assert.match(lines[1], /^claude\s+READY\s+no\s+\/bin\/claude\.exe$/);
+    assert.match(lines[2], /^ollama\s+OFFLINE\s+no\s+\/bin\/ollama\.exe$/);
+    assert.match(lines[3], /^codex\s+NOT_FOUND\s+no\s+-$/);
+  });
+});
+
+describe('render: trace verdict', () => {
+  const TRACE_VERDICT = {
+    tool: 'cold-jury',
+    version: '0.2.0',
+    trace_id: 'trace-abc123',
+    verdict: 'BLOCK',
+    severity: 'P1',
+    exitCode: 1,
+    metrics: {
+      tool_selection_accuracy: 0.6667,
+      mcp_compliance: 0.5,
+      turn_efficiency: 0.5,
+      workflow_completion: 0.6667,
+    },
+    probes: {
+      delegation_quality: { verdict: 'PASS', severity: 'NONE', findings: [] },
+      prompt_injection_detection: { verdict: 'BLOCK', severity: 'P1', findings: [] },
+    },
+    findings: [{ id: 'PI-001', probe: 'prompt_injection_detection', severity: 'P1', title: 'Injected instruction obeyed' }],
+    secretShield: { scanned: true, redactions: 0, leak: false },
+  };
+
+  it('renders the trace id, the four metrics with two decimals and the verdict', () => {
+    const text = renderTrace(TRACE_VERDICT);
+    assert.match(text, /trace-abc123/);
+    assert.match(text, /tool selection accuracy\s+0\.67/);
+    assert.match(text, /MCP compliance\s+0\.50/);
+    assert.match(text, /turn efficiency\s+0\.50/);
+    assert.match(text, /workflow completion\s+0\.67/);
+    assert.match(text, /VERDICT: BLOCK/);
+    assert.match(text, /PI-001/);
+    assert.match(text, /SECRET SHIELD: CLEAN/);
+  });
+
+  it('serialises the aggregate as parseable JSON', () => {
+    const parsed = JSON.parse(renderJson(TRACE_VERDICT));
+    assert.equal(parsed.verdict, 'BLOCK');
+    assert.equal(parsed.metrics.mcp_compliance, 0.5);
+  });
+});
+
+describe('render: doctor gateway column', () => {
+  it('marks gateway availability per engine', () => {
+    const text = renderDoctor(
+      [
+        { engine: 'claude', status: 'READY', path: '/bin/claude.exe', gateway: true },
+        { engine: 'ollama', status: 'READY', path: '/bin/ollama.exe', gateway: false },
+      ],
+      { color: false },
+    );
+    const lines = text.split('\n');
+    assert.match(lines[1], /^claude\s+READY\s+yes\s+/);
+    assert.match(lines[2], /^ollama\s+READY\s+no\s+/);
   });
 });

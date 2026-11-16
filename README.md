@@ -73,7 +73,7 @@ npx --yes github:Dimoncelli/cold-jury review --author hook --spec "What this cha
 ```
 $ npx --yes github:Dimoncelli/cold-jury review --spec "Add retry logic to webhook handler"
 
-cold-jury 0.1.0 | author claude | jurors codex,opencode,ollama
+cold-jury 0.2.0 | author claude | jurors codex,opencode,ollama
 SECRET SHIELD: CLEAN (0 redactions)
 
 JUROR        PROBE         LEVEL  LOCATION                FINDING
@@ -96,6 +96,7 @@ Add `--output .cold-jury/verdict.json` to keep the same JSON on disk, and `--jso
 | `cold-jury doctor` | Detects the review engines in `PATH` and prints `READY`, `OFFLINE` (binary present, daemon down) or `NOT_FOUND`. Also available as `cold-jury --doctor`. |
 | `cold-jury review [flags]` | Runs the sterile room: secret shield, diff, jurors, aggregated verdict. |
 | `cold-jury install-hook [--type pre-commit\|pre-push] [--force]` | Installs an idempotent hook. The pre-push hook reads the pushed refs from stdin and reviews the real range. |
+| `cold-jury trace [file]` | Scores an agent trace: four deterministic metrics plus three probes, from a JSON/JSONL file or stdin. |
 | `cold-jury --version`, `-v` | Prints `cold-jury <version>` and exits `0`. |
 | `cold-jury --help`, `-h` | Prints the full flag list and exits `0`. |
 
@@ -113,8 +114,9 @@ Add `--output .cold-jury/verdict.json` to keep the same JSON on disk, and `--jso
 | `--fail-on <P0\|P1\|P2>` | `P1` | Blocking threshold. `P0` blocks only on P0, `P1` on P0 and P1, `P2` on all three. |
 | `--allow-same-engine` | off | Lets the author engine judge. Writer != Juror stays enforced by default. |
 | `--timeout <ms>` | `120000` | Per juror timeout, killed with `SIGKILL` and `taskkill /T` on Windows when it expires. |
-| `--max-bytes <bytes>` | `300000` | Diff cap. Larger diffs are truncated at a line break and flagged in the verdict. |
+| `--max-bytes <bytes>` | `300000` | Diff cap (`1000`–`2000000`). Larger diffs are truncated at a line break and flagged in the verdict. |
 | `--output <path>` | none | Writes the verdict JSON to a `.json` path inside the repository. Symlinks are refused. |
+| `--gateway`, `--sterile` | off | Injects the provider credential through a local allowlisted gateway instead of the child environment. |
 | `--no-color` | auto | Disables ANSI colors. |
 
 ### Exit codes
@@ -124,6 +126,64 @@ Add `--output .cold-jury/verdict.json` to keep the same JSON on disk, and `--jso
 | `0` | `PASS`: no finding at or above the threshold. |
 | `1` | `BLOCK`: at least one finding at or above the threshold, or a `P0 SECRET_LEAK`. |
 | `2` | Usage or configuration error, or `engine_execution_failed` when no juror completed a probe. |
+
+## Credential gateway (`--gateway`)
+
+`--gateway` (alias `--sterile`) keeps the real provider key in the parent process and strips sensitive environment variables (`KEY`, `TOKEN`, `SECRET`, `CREDENTIAL`, `OAUTH`, `PASSWORD`) from the child process. The gateway listens on an ephemeral `127.0.0.1` port, the child receives a random `COLD_JURY_EPHEMERAL_TOKEN` plus `ANTHROPIC_BASE_URL` (or `OPENAI_BASE_URL`, `GEMINI_BASE_URL`, `OPENCODE_BASE_URL`) pointing at it, and every incoming request is checked against the provider host allowlist before the credential is added (requests above `2 MB` fail with `413 PAYLOAD_TOO_LARGE`). A request to any other host gets `403 FORBIDDEN_HOST` and is never forwarded; without a credential the gateway answers `503 NO_CREDENTIAL` and a run with no credential skips the gateway entirely.
+
+```bash
+# The key stays here; the child only sees a local URL and a throwaway token.
+ANTHROPIC_API_KEY=... cold-jury review --author hook --gateway --spec "Add retry logic"
+```
+
+`doctor` adds a `GATEWAY` column (`yes` when a credential for that engine is present in the environment, `no` otherwise) and supports `--json` output. Ollama is local and never uses the gateway.
+
+## Agent trace (`cold-jury trace`)
+
+`trace` reviews what an agent did, not a diff. It accepts one JSON object, a JSON array of steps or a `.jsonl` file (one step per line), caps the input at 300000 bytes and runs it through the secret shield before anything else. A leaked secret short-circuits to `BLOCK` with `SL-001` and no probe runs; if secret redaction leaves the trace unparseable or empty, it fails closed with exit code `2` (`trace_unusable`).
+
+```json
+{
+  "trace_id": "run-42",
+  "messages": [{ "role": "user", "content": "Resume la factura 42" }],
+  "tool_calls": [{ "id": "TC-001", "name": "search", "arguments": { "q": "invoice 42" }, "ok": true }],
+  "ground_truth": { "required_tools": ["search"], "required_steps": ["search", "export"], "min_turns": 2 }
+}
+```
+
+| Metric | Formula |
+|--------|---------|
+| `tool_selection_accuracy` | Match against `required_tools`, or the share of valid calls when there is no ground truth. No calls: `1.00` without ground truth, `0.00` with it. |
+| `mcp_compliance` | `1 - invalid / total`, where invalid means `ok: false`, a non-empty `error` or `arguments` that is not an object. No calls: `1.00`. |
+| `turn_efficiency` | `min_turns / turns` when `min_turns` is set; otherwise `1 - redundant / turns`, with repeated `name` plus `arguments` counted as redundant. |
+| `workflow_completion` | Share of `required_steps` completed by a tool name or a message content. No ground truth: `1.00`. |
+
+Three probes add findings: `delegation_quality` (a `delegate`/`agent`/`handoff` call with no usable payload blocks), `instruction_compliance` (one P1 per missing required step) and `prompt_injection_detection` (P1 when the assistant obeys an override, P2 when it only appears). `--deterministic` runs the built-in evaluator; without it the first READY engine judges each probe, and the run falls back to deterministic when no juror is available.
+
+```bash
+cold-jury trace trace.json --deterministic
+cat trace.jsonl | cold-jury trace --deterministic --json
+```
+
+```
+cold-jury 0.2.0 | trace run-42 | PASS
+SECRET SHIELD: CLEAN (0 redactions)
+
+METRIC                       VALUE
+tool selection accuracy      1.00
+MCP compliance               1.00
+turn efficiency              0.50
+workflow completion          0.67
+
+TRACE PROBES
+delegation_quality           PASS (NONE)
+instruction_compliance       BLOCK (P1)
+prompt_injection_detection   PASS (NONE)
+
+[P1] instruction_compliance IC-001: Required step "export" was never completed
+
+VERDICT: BLOCK (exit 1) | severity P1
+```
 
 ## CI integration (GitHub Actions)
 

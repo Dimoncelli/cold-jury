@@ -361,6 +361,69 @@ export function aggregate({
   };
 }
 
+const TRACE_SEVERITY_RANK = { P0: 0, P1: 1, P2: 2, NONE: 3 };
+
+/**
+ * Aggregates the deterministic trace metrics and the probe results into one
+ * PASS/BLOCK verdict. A secret leak, a blocking probe or an unmet required step
+ * blocks; the threshold applies to the findings that probes and metrics report.
+ */
+export function aggregateTrace({
+  trace,
+  metrics,
+  probeResults = {},
+  shield = { scanned: true, redactions: 0, leak: false },
+  failOn = 'P1',
+  version = '0.2.0',
+  durationMs = 0,
+  note = '',
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  const probes = probeResults && typeof probeResults === 'object' ? probeResults : {};
+  const findings = [];
+  for (const [probe, result] of Object.entries(probes)) {
+    for (const finding of Array.isArray(result?.findings) ? result.findings : []) {
+      findings.push({ ...finding, probe });
+    }
+  }
+
+  const leak = Boolean(shield?.leak);
+  if (leak) findings.push(secretLeakFinding());
+
+  const ordered = sortFindings(findings);
+  const severity = ordered.reduce(
+    (worst, finding) => (TRACE_SEVERITY_RANK[finding.severity] < TRACE_SEVERITY_RANK[worst] ? finding.severity : worst),
+    'NONE',
+  );
+  const thresholdRank = failOn === 'P0' ? 0 : failOn === 'P2' ? 2 : 1;
+  const blockedByFinding = ordered.some((finding) => TRACE_SEVERITY_RANK[finding.severity] <= thresholdRank);
+  const blockedByProbe = Object.values(probes).some((result) => result?.verdict === 'BLOCK');
+  const requiredSteps = Array.isArray(trace?.ground_truth?.required_steps) ? trace.ground_truth.required_steps : null;
+  const blockedByWorkflow = Boolean(requiredSteps) && metrics?.workflow_completion < 1;
+  const block = leak || blockedByProbe || blockedByWorkflow || blockedByFinding;
+
+  return {
+    tool: 'cold-jury',
+    version,
+    trace_id: trace?.trace_id ?? '',
+    verdict: block ? 'BLOCK' : 'PASS',
+    severity,
+    exitCode: block ? 1 : 0,
+    thresholds: failOn,
+    metrics: metrics === null ? null : (metrics ?? {}),
+    probes,
+    findings: ordered,
+    secretShield: {
+      scanned: shield?.scanned !== false,
+      redactions: Number.isInteger(shield?.redactions) ? shield.redactions : 0,
+      leak,
+    },
+    ...(note ? { note } : {}),
+    durationMs,
+    generatedAt,
+  };
+}
+
 /** Short circuit used when the shield matches a P0 pattern: no juror runs. */
 export function secretLeakVerdict({
   author = '',
